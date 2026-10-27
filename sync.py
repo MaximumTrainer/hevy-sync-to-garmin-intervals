@@ -547,8 +547,15 @@ def build_intervals(
 
 
 def same_intervals(current: list[dict[str, Any]], wanted: list[dict[str, Any]]) -> bool:
-    keys = ("start_index", "end_index", "type", "label")
-    return [tuple(i.get(k) for k in keys) for i in current] == [
+    """Whether the activity already has the wanted intervals.
+
+    Intervals.icu decides WORK or RECOVERY itself (it stores every strength set
+    as WORK, whatever is sent), and fills any stretch of the recording that no
+    interval covers with an unlabelled one. So only the labelled intervals'
+    positions and labels are compared.
+    """
+    keys = ("start_index", "end_index", "label")
+    return [tuple(i.get(k) for k in keys) for i in current if i.get("label")] == [
         tuple(i[k] for k in keys) for i in wanted]
 
 

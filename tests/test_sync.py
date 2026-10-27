@@ -378,9 +378,19 @@ def test_sync_intervals_writes_intervals_then_leaves_them_alone():
     assert sync.sync_intervals(icu, workout(), None, icu.acts, dry_run=False)
     assert icu.written == {"i9": EXPECTED_INTERVALS}
 
-    again = FakeIntervals([ICU_ACT], fit=FIT, times=range(320), current=EXPECTED_INTERVALS)
+    # What Intervals.icu hands back: every interval typed WORK, and an unlabelled
+    # filler over the end of the recording that no set covers.
+    stored = [dict(i, type="WORK") for i in EXPECTED_INTERVALS] + [
+        {"start_index": 305, "end_index": 320, "type": "RECOVERY", "label": None}]
+    again = FakeIntervals([ICU_ACT], fit=FIT, times=range(320), current=stored)
     sync.sync_intervals(again, workout(), None, again.acts, dry_run=False)
     assert again.written == {}
+
+    moved = [dict(i) for i in stored]
+    moved[0]["label"] = "Something else"
+    changed = FakeIntervals([ICU_ACT], fit=FIT, times=range(320), current=moved)
+    sync.sync_intervals(changed, workout(), None, changed.acts, dry_run=False)
+    assert changed.written == {"i9": EXPECTED_INTERVALS}
 
 
 def test_sync_intervals_dry_run_writes_nothing():

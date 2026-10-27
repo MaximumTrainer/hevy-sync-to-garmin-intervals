@@ -1,4 +1,6 @@
+import gzip
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 import sync
 
@@ -201,8 +203,10 @@ class FakeGarmin:
 
 
 class FakeIntervals:
-    def __init__(self, acts):
+    def __init__(self, acts, fit=b"", times=(), current=()):
         self.acts, self.ranges, self.updates = acts, [], {}
+        self.fit, self.times, self.current = fit, list(times), list(current)
+        self.written = {}
 
     def activities(self, oldest, newest):
         self.ranges.append((oldest, newest))
@@ -210,6 +214,18 @@ class FakeIntervals:
 
     def update(self, aid, changes):
         self.updates[aid] = changes
+
+    def original_file(self, aid):
+        return self.fit
+
+    def time_stream(self, aid):
+        return self.times
+
+    def intervals(self, aid):
+        return self.current
+
+    def set_intervals(self, aid, intervals):
+        self.written[aid] = intervals
 
 
 def test_backfill_lists_each_side_once_and_matches_every_workout(monkeypatch):
@@ -281,3 +297,116 @@ def test_chosen_target_without_credentials_fails(monkeypatch):
     monkeypatch.setenv("GARMINTOKENS", "/nonexistent")
     monkeypatch.delenv("GARMIN_PASSWORD")
     assert sync.main(["--target", "both"]) == 0  # "both" skips a missing side quietly
+
+
+# --------------------------------------------------------------------------- #
+# FIT sets -> Intervals.icu intervals
+#
+# tests/fixtures/strength.fit is a Garmin-style recording of the RAW workout
+# (made by tests/fixtures/make_strength_fit.py): 320 one-second records from
+# 07:08:38 UTC and seven `set` messages, four active and three rests.
+# --------------------------------------------------------------------------- #
+
+FIT = (Path(__file__).parent / "fixtures" / "strength.fit").read_bytes()
+FIT_START = datetime(2026, 10, 27, 7, 8, 38, tzinfo=timezone.utc)
+ICU_ACT = {"id": "i9", "type": "WeightTraining", "name": RAW["title"], "kg_lifted": 848,
+           "start_date": "2026-10-27T07:08:38Z"}
+EXPECTED_INTERVALS = [
+    {"start_index": 5, "end_index": 35, "type": "WORK", "label": "Bench Press (Barbell): 32kg×8 (w)"},
+    {"start_index": 35, "end_index": 95, "type": "RECOVERY", "label": "Rest"},
+    {"start_index": 95, "end_index": 125, "type": "WORK", "label": "Bench Press (Barbell): 32kg×8"},
+    {"start_index": 125, "end_index": 185, "type": "RECOVERY", "label": "Rest"},
+    {"start_index": 185, "end_index": 215, "type": "WORK", "label": "Bent Over Row (Barbell): 42kg×8"},
+    {"start_index": 215, "end_index": 260, "type": "RECOVERY", "label": "Rest"},
+    {"start_index": 260, "end_index": 305, "type": "WORK", "label": "Hollow-Body Hold: 45s"},
+]
+
+
+def test_fit_sets_reads_every_set_message():
+    sets = sync.fit_sets(FIT)
+    assert [s["setType"] for s in sets] == ["ACTIVE", "REST"] * 3 + ["ACTIVE"]
+    assert [s["repetitionCount"] for s in sets if s["setType"] == "ACTIVE"] == [8, 8, 8, 0]
+    assert [s["exercises"][0]["category"] for s in sets if s["setType"] == "ACTIVE"] == [
+        "BENCH_PRESS", "BENCH_PRESS", "ROW", "CRUNCH"]
+    assert sets[0]["start"] == FIT_START + timedelta(seconds=5)
+    assert [s["duration"] for s in sets] == [30, 60, 30, 60, 30, 45, 45]
+
+
+def test_fit_sets_ignores_files_that_are_not_fit():
+    assert sync.fit_sets(b"<?xml version='1.0'?><gpx/>") == []
+
+
+def test_build_intervals_labels_each_set_from_hevy():
+    w = workout()
+    sets = sync.fit_sets(FIT)
+    pairs, _ = sync.align_sets(sets, w)
+    got = sync.build_intervals(sets, pairs, w, FIT_START, list(range(320)))
+    assert got == EXPECTED_INTERVALS
+
+
+def test_build_intervals_follows_the_time_stream_and_marks_extra_sets():
+    w = workout()
+    t0 = FIT_START
+    sets = [
+        {"setType": "ACTIVE", "repetitionCount": 8, "start": t0 + timedelta(seconds=10), "duration": 20},
+        {"setType": "ACTIVE", "repetitionCount": 3, "start": t0 + timedelta(seconds=40), "duration": 10},
+        {"setType": "REST", "repetitionCount": None, "start": t0 + timedelta(seconds=50.5), "duration": 0.5},
+        {"setType": "ACTIVE", "repetitionCount": 8, "start": t0 + timedelta(seconds=900), "duration": 30},
+    ]
+    pairs = [(sets[0], w.exercises[0].sets[1])]
+    times = list(range(0, 60, 2))  # one sample every 2 s, so index = seconds / 2
+    got = sync.build_intervals(sets, pairs, w, t0, times)
+    assert got == [
+        {"start_index": 5, "end_index": 15, "type": "WORK", "label": "Bench Press (Barbell): 32kg×8"},
+        {"start_index": 20, "end_index": 25, "type": "WORK", "label": "Extra set (not in Hevy)"},
+    ]  # the half-second rest and the set after the recording ended are left out
+
+
+def test_build_intervals_never_overlap():
+    w = workout()
+    t0 = FIT_START
+    sets = [  # the watch rounds: the rest starts 0.6 s before the set ends
+        {"setType": "ACTIVE", "repetitionCount": 8, "start": t0, "duration": 23.6},
+        {"setType": "REST", "repetitionCount": None, "start": t0 + timedelta(seconds=23), "duration": 19},
+    ]
+    got = sync.build_intervals(sets, [(sets[0], w.exercises[0].sets[1])], w, t0, list(range(60)))
+    assert [(i["start_index"], i["end_index"]) for i in got] == [(0, 24), (24, 42)]
+
+
+def test_sync_intervals_writes_intervals_then_leaves_them_alone():
+    icu = FakeIntervals([ICU_ACT], fit=FIT, times=range(320))
+    assert sync.sync_intervals(icu, workout(), None, icu.acts, dry_run=False)
+    assert icu.written == {"i9": EXPECTED_INTERVALS}
+
+    again = FakeIntervals([ICU_ACT], fit=FIT, times=range(320), current=EXPECTED_INTERVALS)
+    sync.sync_intervals(again, workout(), None, again.acts, dry_run=False)
+    assert again.written == {}
+
+
+def test_sync_intervals_dry_run_writes_nothing():
+    icu = FakeIntervals([ICU_ACT], fit=FIT, times=range(320))
+    sync.sync_intervals(icu, workout(), None, icu.acts, dry_run=True)
+    assert icu.written == {} and icu.updates == {}
+
+
+def test_sync_intervals_leaves_intervals_alone_when_sets_do_not_line_up():
+    more = dict(RAW, exercises=RAW["exercises"] + [  # Hevy now has 7 sets, the FIT only 4
+        {"title": "Pull Up", "sets": [{"type": "normal", "reps": 6}] * 3}])
+    icu = FakeIntervals([ICU_ACT], fit=FIT, times=range(320))
+    sync.sync_intervals(icu, sync.parse_hevy_workout(more), None, icu.acts, dry_run=False)
+    assert icu.written == {}
+
+
+def test_original_file_unzips_gzip():
+    class Resp:
+        def __init__(self, content):
+            self.content = content
+
+        def raise_for_status(self):
+            pass
+
+    icu = sync.Intervals("k")
+    icu.s.get = lambda url, timeout: Resp(gzip.compress(FIT))
+    assert icu.original_file("i9") == FIT
+    icu.s.get = lambda url, timeout: Resp(FIT)
+    assert icu.original_file("i9") == FIT

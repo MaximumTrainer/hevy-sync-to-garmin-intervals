@@ -28,6 +28,7 @@ this. This job copies it across.
 | Sets | the weight and reps Hevy recorded for each set | – |
 | Weight | follows from the sets (Garmin's total volume) | **kg lifted** = Hevy's volume (weight × reps over every set, warm-ups included) |
 | Notes | – | a set-by-set list, written only if the notes are empty or were written by this job |
+| Intervals | – | one interval per set on the timeline, labelled with the Hevy exercise, weight and reps, with a recovery interval for each rest, so you see heart rate per exercise ([how](#sets-as-intervalsicu-intervals)) |
 
 Nothing else is touched: not the exercise names Garmin chose, not heart rate,
 not training load, and never notes you wrote yourself.
@@ -66,6 +67,31 @@ says why in the log.
 > **Dumbbells:** each side gets the full weight you typed into Hevy. If you log
 > the *combined* weight of two dumbbells, the Garmin sets will show that total
 > on each side.
+
+### Sets as Intervals.icu intervals
+
+Intervals.icu doesn't show a strength session's sets on its timeline, but the
+FIT file your watch recorded has them. Garmin writes a `set` message for every
+set, active or rest, with its start time, duration and rep count (see
+[this Intervals.icu forum thread](https://forum.intervals.icu/t/strength-training-exercises-as-intervals-laps-on-the-timeline-hr-per-exercise-possible/128015/4)).
+The job:
+
+1. downloads the activity's original FIT file from Intervals.icu and reads its
+   `set` messages;
+2. lines up the active sets with the Hevy sets, the same way as for Garmin
+   (above);
+3. turns each set into an interval at the same point in the recording: **WORK**
+   for an active set, labelled e.g. `Bench Press (Barbell): 42kg×10` (or
+   `Extra set (not in Hevy)` for a set Hevy doesn't have), and **RECOVERY**,
+   labelled `Rest`, for a rest;
+4. replaces the activity's intervals with these, so Intervals.icu works out the
+   heart rate, time and load of each one.
+
+This reads the FIT file Intervals.icu already has, so it works without Garmin
+(`target: intervals`) too. If the sets cannot be lined up, or the activity
+wasn't recorded as a FIT file, the intervals are left as they are. Intervals you
+drew by hand on a strength activity are replaced once its sets line up. Running
+it again leaves intervals that already match alone.
 
 ## Choosing what to update
 
@@ -326,6 +352,10 @@ instead. To remove the task: `Unregister-ScheduledTask -TaskName "Hevy sync"`.
 .venv/bin/pip install pytest
 .venv/bin/python -m pytest -q
 ```
+
+The tests decode `tests/fixtures/strength.fit`, a small Garmin-style strength
+recording. `tests/fixtures/make_strength_fit.py` rebuilds it (it needs
+`pip install fit-tool`, which the job itself doesn't).
 
 ## Caveats
 

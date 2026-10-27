@@ -1,2 +1,3 @@
 requests>=2.33
 garminconnect==0.3.20
+garmin-fit-sdk==21.218.0

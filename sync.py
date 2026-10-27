@@ -8,6 +8,10 @@ For each Hevy workout in the lookback window:
 * Intervals.icu: the activity imported from that Garmin activity gets the same
   title, ``kg_lifted`` set to the Hevy volume, and a set-by-set breakdown in
   its description. A description someone wrote by hand is never overwritten.
+  The ``set`` messages in the activity's FIT file (one per set, active or rest,
+  each with its start time and duration) become the activity's intervals,
+  labelled with Hevy's exercise, weight and reps, so the timeline shows heart
+  rate per exercise.
 
 Running it twice changes nothing the second time, so it is safe to re-run.
 """
@@ -15,6 +19,8 @@ Running it twice changes nothing the second time, so it is safe to re-run.
 from __future__ import annotations
 
 import argparse
+import bisect
+import gzip
 import logging
 import os
 import sys
@@ -151,20 +157,23 @@ def fmt_num(x: float) -> str:
     return f"{x:g}"
 
 
+def fmt_set(s: HevySet) -> str:
+    """'42kg×10', '12 reps' or '45s', with ' (w)' for a warm-up; '' if there is nothing to show."""
+    if s.weight_kg and s.reps:
+        p = f"{fmt_num(s.weight_kg)}kg×{s.reps}"
+    elif s.reps:
+        p = f"{s.reps} reps"
+    elif s.duration_seconds:
+        p = f"{fmt_num(s.duration_seconds)}s"
+    else:
+        return ""
+    return p + (" (w)" if s.set_type == "warmup" else "")
+
+
 def describe(workout: HevyWorkout) -> str:
     lines = [DESCRIPTION_MARKER]
     for ex in workout.exercises:
-        parts = []
-        for s in ex.sets:
-            if s.weight_kg and s.reps:
-                p = f"{fmt_num(s.weight_kg)}kg×{s.reps}"
-            elif s.reps:
-                p = f"{s.reps} reps"
-            elif s.duration_seconds:
-                p = f"{fmt_num(s.duration_seconds)}s"
-            else:
-                continue
-            parts.append(p + (" (w)" if s.set_type == "warmup" else ""))
+        parts = [p for p in map(fmt_set, ex.sets) if p]
         lines.append(f"{ex.title}: {', '.join(parts)}" if parts else ex.title)
     lines.append(f"Volume: {fmt_num(workout.volume_kg)} kg")
     return "\n".join(lines)
@@ -437,6 +446,140 @@ class Intervals:
         r.raise_for_status()
         return r.json()
 
+    def original_file(self, activity_id: str) -> bytes:
+        """The file the activity was imported from (Garmin's FIT), unzipped."""
+        r = self.s.get(f"{INTERVALS_API}/activity/{activity_id}/file", timeout=60)
+        r.raise_for_status()
+        data = r.content
+        return gzip.decompress(data) if data[:2] == b"\x1f\x8b" else data
+
+    def time_stream(self, activity_id: str) -> list[float]:
+        """Seconds from the activity's start for each sample, which interval indices point into."""
+        r = self.s.get(f"{INTERVALS_API}/activity/{activity_id}/streams.json",
+                       params={"types": "time"}, timeout=60)
+        r.raise_for_status()
+        return next((st.get("data") or [] for st in r.json() if st.get("type") == "time"), [])
+
+    def intervals(self, activity_id: str) -> list[dict[str, Any]]:
+        r = self.s.get(f"{INTERVALS_API}/activity/{activity_id}/intervals", timeout=30)
+        r.raise_for_status()
+        return r.json().get("icu_intervals") or []
+
+    def set_intervals(self, activity_id: str, intervals: list[dict[str, Any]]) -> None:
+        """Replace the activity's intervals."""
+        r = self.s.put(f"{INTERVALS_API}/activity/{activity_id}/intervals",
+                       params={"all": "true"}, json=intervals, timeout=60)
+        r.raise_for_status()
+
+
+def fit_sets(fit: bytes) -> list[dict[str, Any]]:
+    """The `set` messages of a FIT file, oldest first, shaped like Garmin Connect's exerciseSets.
+
+    Each has setType ("ACTIVE" or "REST"), repetitionCount, exercises[0].category,
+    and the set's start (a UTC datetime) and duration in seconds.
+    """
+    from garmin_fit_sdk import Decoder, Stream
+
+    decoder = Decoder(Stream.from_byte_array(bytearray(fit)))
+    if not decoder.is_fit():
+        return []  # a GPX or TCX upload: no sets to read
+    messages, errors = decoder.read()
+    if errors:
+        raise ValueError(f"could not read the FIT file: {errors[0]}")
+    sets = []
+    for m in messages.get("set_mesgs") or []:
+        duration = m.get("duration")
+        start = m.get("start_time")
+        if start is None and m.get("timestamp") and duration is not None:
+            start = m["timestamp"] - timedelta(seconds=duration)
+        if start is None or duration is None:
+            continue
+        category = m.get("category")
+        if isinstance(category, list):
+            category = category[0] if category else None
+        sets.append({
+            "setType": "ACTIVE" if m.get("set_type") == "active" else "REST",
+            "repetitionCount": m.get("repetitions"),
+            "exercises": [{"category": str(category).upper() if category else None, "name": None}],
+            "start": start,
+            "duration": float(duration),
+        })
+    sets.sort(key=lambda x: x["start"])
+    return sets
+
+
+def build_intervals(
+    sets: list[dict[str, Any]],
+    pairs: list[tuple[dict[str, Any], HevySet]],
+    workout: HevyWorkout,
+    activity_start: datetime,
+    times: list[float],
+) -> list[dict[str, Any]]:
+    """One Intervals.icu interval per FIT set: WORK for an active set, labelled
+    from the Hevy set it was paired with, and RECOVERY for a rest.
+
+    Indices point into the activity's time stream; end_index is exclusive.
+    The watch rounds set times, so a set can start a moment before the last one
+    ended: each interval starts where the previous one ended at the earliest.
+    Sets that fall outside the recording, or shorter than a sample, are left out.
+    """
+    exercise_of = {id(h): ex.title for ex in workout.exercises for h in ex.sets}
+    hevy_for = {id(g): h for g, h in pairs}
+    out: list[dict[str, Any]] = []
+    for g in sets:
+        offset = (g["start"] - activity_start).total_seconds()
+        start_index = max(bisect.bisect_left(times, offset), out[-1]["end_index"] if out else 0)
+        end_index = bisect.bisect_left(times, offset + g["duration"])
+        if end_index <= start_index:
+            continue
+        if g["setType"] == "REST":
+            kind, label = "RECOVERY", "Rest"
+        else:
+            kind = "WORK"
+            h = hevy_for.get(id(g))
+            if h is None:
+                label = "Extra set (not in Hevy)"
+            else:
+                detail = fmt_set(h)
+                label = exercise_of[id(h)] + (f": {detail}" if detail else "")
+        out.append({"start_index": start_index, "end_index": end_index, "type": kind, "label": label})
+    return out
+
+
+def same_intervals(current: list[dict[str, Any]], wanted: list[dict[str, Any]]) -> bool:
+    keys = ("start_index", "end_index", "type", "label")
+    return [tuple(i.get(k) for k in keys) for i in current] == [
+        tuple(i[k] for k in keys) for i in wanted]
+
+
+def sync_intervals_laps(icu: Intervals, activity: dict[str, Any], workout: HevyWorkout,
+                        dry_run: bool) -> None:
+    """Turn the FIT file's sets into the activity's intervals, labelled from Hevy."""
+    aid = activity["id"]
+    sets = fit_sets(icu.original_file(aid))
+    if not sets:
+        log.info("Intervals %s: the activity's file has no FIT sets, intervals left alone", aid)
+        return
+    pairs, note = align_sets(sets, workout)
+    if not pairs:
+        log.info("Intervals %s: intervals left alone: %s", aid, note.removeprefix("left the sets alone: "))
+        return
+    wanted = build_intervals(sets, pairs, workout, parse_time(activity["start_date"]),
+                             icu.time_stream(aid))
+    current = icu.intervals(aid)
+    if same_intervals(current, wanted):
+        log.info("Intervals %s: intervals already match the sets", aid)
+        return
+    log.info("Intervals %s: replacing %d interval(s):", aid, len(current))
+    for i in current:
+        log.info("  %5s-%-5s %-8s %s", i.get("start_index"), i.get("end_index"), i.get("type"),
+                 i.get("label") or "")
+    log.info("Intervals %s: with %d interval(s) from the FIT sets (%s):", aid, len(wanted), note)
+    for i in wanted:
+        log.info("  %5d-%-5d %-8s %s", i["start_index"], i["end_index"], i["type"], i["label"])
+    if not dry_run:
+        icu.set_intervals(aid, wanted)
+
 
 def intervals_changes(activity: dict[str, Any], workout: HevyWorkout) -> dict[str, Any]:
     changes: dict[str, Any] = {}
@@ -473,14 +616,14 @@ def sync_intervals(
     changes = intervals_changes(match, workout)
     if not changes:
         log.info("Intervals %s: already up to date", match["id"])
-        return True
     for k, v in sorted(changes.items()):
         if k == "description":
             log.info("Intervals %s: description ->\n%s", match["id"], v)
         else:
             log.info("Intervals %s: %s %r -> %r", match["id"], k, match.get(k), v)
-    if not dry_run:
+    if changes and not dry_run:
         icu.update(match["id"], changes)
+    sync_intervals_laps(icu, match, workout, dry_run)
     return True
 
 

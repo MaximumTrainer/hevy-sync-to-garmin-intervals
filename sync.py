@@ -255,6 +255,11 @@ def describe_token_file(path: Path) -> str:
     try:
         data = json.loads(text)
     except ValueError:
+        if text.count(".") == 2 and text.startswith("eyJ"):
+            return (
+                "the secret holds a single access token (a JWT), which expires within a day "
+                "and cannot be refreshed. Run scripts/garmin_login.py and paste the JSON it prints."
+            )
         return f"{path.name} is not JSON ({len(text)} characters, starts with {text[:1]!r})"
     if not isinstance(data, dict):
         return f"{path.name} is JSON but a {type(data).__name__}, not an object"

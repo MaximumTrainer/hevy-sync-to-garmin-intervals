@@ -347,6 +347,11 @@ def sync_garmin(client, workout: HevyWorkout, dry_run: bool) -> dict[str, Any] |
     pairs, note = align_sets(sets, workout)
     changed = apply_hevy_sets(pairs)
     log.info("Garmin %s: matched sets %s; %d set(s) to update", aid, note, changed)
+    if not pairs:
+        for g in (s for s in sets if s.get("setType") == "ACTIVE"):
+            ex = (g.get("exercises") or [{}])[0]
+            log.info("  garmin set: %s/%s reps=%s duration=%s",
+                     ex.get("category"), ex.get("name"), g.get("repetitionCount"), g.get("duration"))
     if changed and not dry_run:
         client.set_activity_exercise_sets(aid, {"activityId": aid, "exerciseSets": sets})
     return match

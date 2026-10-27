@@ -1,0 +1,79 @@
+name: sync
+
+on:
+  schedule:
+    - cron: "0 22 * * *"   # 22:00 UTC every day, after the day's training
+  workflow_dispatch:
+    inputs:
+      days:
+        description: "Sync Hevy workouts from the last N days"
+        default: "2"
+      dry_run:
+        description: "Only log what would change"
+        type: boolean
+        default: false
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: sync
+  cancel-in-progress: false
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements.txt pytest
+      - run: python -m pytest -q
+
+  sync:
+    needs: test
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements.txt
+
+      # Garmin refreshes its tokens as they are used. The latest ones are kept
+      # in the Actions cache; GARMIN_TOKENS only seeds the first run, or a run
+      # after the cache has expired.
+      - name: Restore Garmin tokens
+        uses: actions/cache/restore@v4
+        with:
+          path: ~/.garminconnect
+          key: garmin-tokens-${{ github.run_id }}
+          restore-keys: garmin-tokens-
+      - name: Seed Garmin tokens from the secret
+        env:
+          GARMIN_TOKENS: ${{ secrets.GARMIN_TOKENS }}
+        run: |
+          if [ ! -s ~/.garminconnect/garmin_tokens.json ] && [ -n "$GARMIN_TOKENS" ]; then
+            mkdir -p -m 700 ~/.garminconnect
+            printf '%s' "$GARMIN_TOKENS" > ~/.garminconnect/garmin_tokens.json
+            chmod 600 ~/.garminconnect/garmin_tokens.json
+          fi
+
+      - name: Sync
+        env:
+          HEVY_API_KEY: ${{ secrets.HEVY_API_KEY }}
+          INTERVALS_API_KEY: ${{ secrets.INTERVALS_API_KEY }}
+          GARMIN_EMAIL: ${{ secrets.GARMIN_EMAIL }}
+          GARMIN_PASSWORD: ${{ secrets.GARMIN_PASSWORD }}
+          LOOKBACK_DAYS: ${{ inputs.days || '2' }}
+          DRY_RUN: ${{ inputs.dry_run && 'true' || '' }}
+        run: python sync.py
+
+      - name: Save Garmin tokens
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: ~/.garminconnect
+          key: garmin-tokens-${{ github.run_id }}

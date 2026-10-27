@@ -30,7 +30,8 @@ Garmin are never changed.
    `pip install garminconnect==0.3.20 && python scripts/garmin_login.py`
    and copy the JSON it prints.
 4. Add the repository secrets (Settings → Secrets and variables → Actions):
-   `HEVY_API_KEY`, `INTERVALS_API_KEY`, `GARMIN_TOKENS`.
+   `HEVY_API_KEY` (or `HEVY_KEY`), `INTERVALS_API_KEY`, `GARMIN_TOKENS`.
+   Without Garmin credentials the job still updates Intervals.icu and skips Garmin.
    `GARMIN_EMAIL` and `GARMIN_PASSWORD` are optional: they are used only if the
    tokens stop working, and will not help on an account with MFA.
 5. Actions → sync → Run workflow, with **dry run** ticked, and read the log.

@@ -63,7 +63,7 @@ jobs:
 
       - name: Sync
         env:
-          HEVY_API_KEY: ${{ secrets.HEVY_API_KEY }}
+          HEVY_API_KEY: ${{ secrets.HEVY_API_KEY || secrets.HEVY_KEY }}
           INTERVALS_API_KEY: ${{ secrets.INTERVALS_API_KEY }}
           GARMIN_EMAIL: ${{ secrets.GARMIN_EMAIL }}
           GARMIN_PASSWORD: ${{ secrets.GARMIN_PASSWORD }}

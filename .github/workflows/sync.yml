@@ -53,7 +53,7 @@ jobs:
           restore-keys: garmin-tokens-
       - name: Seed Garmin tokens from the secret
         env:
-          GARMIN_TOKENS: ${{ secrets.GARMIN_TOKENS }}
+          GARMIN_TOKENS: ${{ secrets.GARMIN_TOKENS || secrets.GARMIN_TOKEN }}
         run: |
           if [ ! -s ~/.garminconnect/garmin_tokens.json ] && [ -n "$GARMIN_TOKENS" ]; then
             mkdir -p -m 700 ~/.garminconnect

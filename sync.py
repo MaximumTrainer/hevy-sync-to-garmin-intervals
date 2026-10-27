@@ -247,11 +247,34 @@ def apply_hevy_sets(pairs: list[tuple[dict[str, Any], HevySet]]) -> int:
     return changed
 
 
+def describe_token_file(path: Path) -> str:
+    """Say what is wrong with a token file without printing any of it."""
+    import json
+
+    text = path.read_text(encoding="utf-8").strip()
+    try:
+        data = json.loads(text)
+    except ValueError:
+        return f"{path.name} is not JSON ({len(text)} characters, starts with {text[:1]!r})"
+    if not isinstance(data, dict):
+        return f"{path.name} is JSON but a {type(data).__name__}, not an object"
+    missing = [k for k in ("di_token", "di_refresh_token", "di_client_id") if not data.get(k)]
+    if missing:
+        return f"{path.name} has keys {sorted(data)} but is missing {missing}"
+    return f"{path.name} looks complete"
+
+
 def garmin_login(tokenstore: str | None):
     from garminconnect import Garmin
 
     client = Garmin(os.getenv("GARMIN_EMAIL") or None, os.getenv("GARMIN_PASSWORD") or None)
-    client.login(tokenstore)
+    try:
+        client.login(tokenstore)
+    except Exception:
+        token_file = Path(tokenstore or "") / "garmin_tokens.json"
+        if tokenstore and token_file.is_file():
+            log.error("Garmin login failed. %s", describe_token_file(token_file))
+        raise
     if tokenstore:
         # Keep refreshed tokens so the next run does not need a password login.
         try:

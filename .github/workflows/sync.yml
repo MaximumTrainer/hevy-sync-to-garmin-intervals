@@ -43,22 +43,26 @@ jobs:
       - run: pip install -r requirements.txt
 
       # Garmin refreshes its tokens as they are used. The latest ones are kept
-      # in the Actions cache; GARMIN_TOKENS only seeds the first run, or a run
-      # after the cache has expired.
+      # in the Actions cache; GARMIN_TOKENS seeds the first run, and seeds
+      # again whenever the secret is changed.
       - name: Restore Garmin tokens
         uses: actions/cache/restore@v4
         with:
           path: ~/.garminconnect
-          key: garmin-tokens-${{ github.run_id }}
-          restore-keys: garmin-tokens-
+          key: garmin-tokens-v2-${{ github.run_id }}
+          restore-keys: garmin-tokens-v2-
       - name: Seed Garmin tokens from the secret
         env:
           GARMIN_TOKENS: ${{ secrets.GARMIN_TOKENS || secrets.GARMIN_TOKEN }}
         run: |
-          if [ ! -s ~/.garminconnect/garmin_tokens.json ] && [ -n "$GARMIN_TOKENS" ]; then
+          [ -n "$GARMIN_TOKENS" ] || exit 0
+          seed=$(printf '%s' "$GARMIN_TOKENS" | sha256sum | cut -c1-64)
+          if [ "$(cat ~/.garminconnect/seed.sha256 2>/dev/null)" != "$seed" ]; then
+            echo "Seeding Garmin tokens from the secret"
             mkdir -p -m 700 ~/.garminconnect
             printf '%s' "$GARMIN_TOKENS" > ~/.garminconnect/garmin_tokens.json
             chmod 600 ~/.garminconnect/garmin_tokens.json
+            echo "$seed" > ~/.garminconnect/seed.sha256
           fi
 
       - name: Sync
@@ -72,8 +76,8 @@ jobs:
         run: python sync.py
 
       - name: Save Garmin tokens
-        if: always()
+        if: success()
         uses: actions/cache/save@v4
         with:
           path: ~/.garminconnect
-          key: garmin-tokens-${{ github.run_id }}
+          key: garmin-tokens-v2-${{ github.run_id }}

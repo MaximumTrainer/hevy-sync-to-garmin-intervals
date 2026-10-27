@@ -96,3 +96,12 @@ def test_intervals_changes_fills_empty_and_is_idempotent():
     assert changes["description"] == sync.describe(w)
     done = {"name": w.title, "kg_lifted": w.volume_kg, "description": sync.describe(w)}
     assert sync.intervals_changes(done, w) == {}
+
+
+def test_describe_token_file_never_prints_values(tmp_path):
+    f = tmp_path / "garmin_tokens.json"
+    f.write_text('{"oauth1_token": "SECRET", "oauth2_token": "SECRET"}')
+    msg = sync.describe_token_file(f)
+    assert "SECRET" not in msg and "missing" in msg
+    f.write_text("not json SECRET")
+    assert "SECRET" not in sync.describe_token_file(f)

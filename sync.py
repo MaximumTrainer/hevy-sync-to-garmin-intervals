@@ -176,22 +176,22 @@ def garmin_start(activity: dict[str, Any]) -> datetime:
     )
 
 
-def _blocks(items: list, key) -> list[list]:
-    """Split a list into runs of consecutive items sharing the same key."""
-    out: list[list] = []
-    last = object()
-    for item in items:
-        k = key(item)
-        if not out or k != last:
-            out.append([])
-            last = k
-        out[-1].append(item)
-    return out
+UNILATERAL_WORDS = ("single", "one-arm", "one arm", "one-leg", "one leg", "unilateral",
+                    "bulgarian", "split squat", "lunge", "step up", "step-up", "alternat")
+SKIP_COST = 3.0         # a Garmin set with no Hevy counterpart (an extra the watch detected)
+PER_SIDE_COST = 1.0     # per set, for treating an exercise not named as one-sided as left + right
+MAX_SKIPPED = 3
 
 
-def _garmin_exercise_key(s: dict[str, Any]) -> tuple:
-    ex = (s.get("exercises") or [{}])[0]
-    return (ex.get("category"), ex.get("name"))
+def looks_unilateral(title: str) -> bool:
+    t = title.lower()
+    return any(w in t for w in UNILATERAL_WORDS)
+
+
+def _rep_cost(h: HevySet, g: dict[str, Any]) -> float:
+    if not h.reps:  # timed or distance sets: Garmin's rep count means nothing here
+        return 0.0
+    return min(abs((g.get("repetitionCount") or 0) - h.reps), 5)
 
 
 def align_sets(
@@ -199,34 +199,77 @@ def align_sets(
 ) -> tuple[list[tuple[dict[str, Any], HevySet]], str]:
     """Pair Garmin ACTIVE sets with Hevy sets.
 
-    First by exercise (Garmin groups consecutive sets of one exercise), and if
-    the exercise counts disagree, set by set when the totals agree. Returns the
-    pairs and a note saying which strategy was used, or why nothing was paired.
+    Hevy logs a one-sided exercise as one set covering both sides; the watch
+    records a set per side. The watch also picks up the odd set Hevy never saw.
+    So each Hevy exercise takes either one Garmin set per Hevy set or two (left
+    and right), and Garmin sets may be skipped; the cheapest arrangement by rep
+    count wins. Returns the pairs and a note on what was done, or why nothing
+    was paired.
     """
     active = [s for s in garmin_sets if s.get("setType") == "ACTIVE"]
-    hevy_ex = [e for e in workout.exercises if e.sets]
-    g_blocks = _blocks(active, _garmin_exercise_key)
+    exercises = [e for e in workout.exercises if e.sets]
+    n_g, n_e = len(active), len(exercises)
+    inf = float("inf")
+    # best[i][j]: cheapest way to place exercises i.. on Garmin sets j..
+    best = [[inf] * (n_g + 1) for _ in range(n_e + 1)]
+    step: list[list[tuple | None]] = [[None] * (n_g + 1) for _ in range(n_e + 1)]
+    for j in range(n_g, -1, -1):
+        best[n_e][j] = (n_g - j) * SKIP_COST
+        step[n_e][j] = ("skip",) if j < n_g else None
+    for i in range(n_e - 1, -1, -1):
+        ex = exercises[i]
+        one_sided = looks_unilateral(ex.title)
+        for j in range(n_g, -1, -1):
+            if j < n_g and SKIP_COST + best[i][j + 1] < best[i][j]:
+                best[i][j], step[i][j] = SKIP_COST + best[i][j + 1], ("skip",)
+            for sides in (1, 2):
+                need = len(ex.sets) * sides
+                if j + need > n_g:
+                    continue
+                cost = sum(
+                    _rep_cost(h, active[j + k * sides + side])
+                    for k, h in enumerate(ex.sets)
+                    for side in range(sides)
+                )
+                if sides == 2 and not one_sided:
+                    cost += PER_SIDE_COST * len(ex.sets)
+                if sides == 1 and one_sided:
+                    cost += PER_SIDE_COST * len(ex.sets)
+                total = cost + best[i + 1][j + need]
+                if total < best[i][j]:
+                    best[i][j], step[i][j] = total, ("place", sides)
 
-    if len(g_blocks) == len(hevy_ex):
-        pairs = []
-        mismatched = []
-        for gb, he in zip(g_blocks, hevy_ex):
-            if len(gb) != len(he.sets):
-                mismatched.append(f"{he.title} ({len(gb)} on Garmin, {len(he.sets)} in Hevy)")
-            pairs.extend(zip(gb, he.sets))
-        note = "by exercise"
-        if mismatched:
-            note += "; set counts differ for " + ", ".join(mismatched)
-        return pairs, note
+    pairs: list[tuple[dict[str, Any], HevySet]] = []
+    per_side: list[str] = []
+    skipped = 0
+    i = j = 0
+    while (i < n_e or j < n_g) and step[i][j]:
+        move = step[i][j]
+        if move[0] == "skip":
+            skipped += 1
+            j += 1
+            continue
+        sides = move[1]
+        ex = exercises[i]
+        for k, h in enumerate(ex.sets):
+            for side in range(sides):
+                pairs.append((active[j + k * sides + side], h))
+        if sides == 2:
+            per_side.append(ex.title)
+        j += len(ex.sets) * sides
+        i += 1
 
-    hevy_flat = [s for e in hevy_ex for s in e.sets]
-    if len(active) == len(hevy_flat):
-        return list(zip(active, hevy_flat)), "set by set"
-
-    return [], (
-        f"left the sets alone: Garmin has {len(g_blocks)} exercises / {len(active)} sets, "
-        f"Hevy has {len(hevy_ex)} exercises / {len(hevy_flat)} sets"
-    )
+    if i < n_e or skipped > MAX_SKIPPED:
+        return [], (
+            f"left the sets alone: could not line up Garmin's {n_g} sets with Hevy's "
+            f"{sum(len(e.sets) for e in exercises)}"
+        )
+    note = f"{len(pairs)} of {n_g} sets"
+    if per_side:
+        note += "; left + right for " + ", ".join(per_side)
+    if skipped:
+        note += f"; {skipped} extra Garmin set(s) left alone"
+    return pairs, note
 
 
 def apply_hevy_sets(pairs: list[tuple[dict[str, Any], HevySet]]) -> int:

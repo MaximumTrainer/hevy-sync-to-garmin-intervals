@@ -56,27 +56,52 @@ def test_garmin_start_is_utc():
         2026, 10, 27, 7, 8, 38, tzinfo=timezone.utc)
 
 
-def test_align_by_exercise_and_write_grams():
+def test_align_and_write_grams():
     sets = [
-        gset("BENCH_PRESS", "BARBELL_BENCH_PRESS", reps=10),
+        gset("BENCH_PRESS", None, reps=10),
         gset(None, None, set_type="REST"),
-        gset("BENCH_PRESS", "BARBELL_BENCH_PRESS", reps=10),
-        gset("ROW", "BARBELL_ROW", reps=10),
-        gset("CORE", "HOLLOW_HOLD"),
+        gset("BENCH_PRESS", None, reps=8),
+        gset("ROW", None, reps=8),
+        gset("CORE", None, reps=1),
     ]
     pairs, note = sync.align_sets(sets, workout())
-    assert note == "by exercise"
+    assert note == "4 of 4 sets"
     assert sync.apply_hevy_sets(pairs) == 3  # the hold has no weight or reps to change
     assert [s["weight"] for s in sets if s["setType"] == "ACTIVE"] == [32000.0, 32000.0, 42000.0, 0.0]
     assert sets[0]["repetitionCount"] == 8
     assert sync.apply_hevy_sets(pairs) == 0  # second run changes nothing
 
 
-def test_align_falls_back_to_set_by_set():
-    # Garmin lumped everything under one exercise but the set total matches.
-    sets = [gset("UNKNOWN", None) for _ in range(4)]
-    pairs, note = sync.align_sets(sets, workout())
-    assert note == "set by set" and len(pairs) == 4
+def hevy(*exercises):
+    return sync.HevyWorkout("w", "t", datetime.now(timezone.utc), datetime.now(timezone.utc), [
+        sync.HevyExercise(title, [sync.HevySet(kg, r) for kg, r in sets]) for title, sets in exercises
+    ])
+
+
+def test_one_sided_exercise_fills_left_and_right():
+    w = hevy(("Squat (Barbell)", [(72, 6)] * 2),
+             ("Bulgarian Split Squat (Dumbbell)", [(48, 8)] * 2),
+             ("Romanian Deadlift (Trap Bar)", [(81, 8)]))
+    sets = [gset("UNKNOWN", None, reps=r) for r in (6, 6, 8, 8, 8, 8, 8)]
+    pairs, note = sync.align_sets(sets, w)
+    assert "left + right for Bulgarian Split Squat (Dumbbell)" in note
+    sync.apply_hevy_sets(pairs)
+    assert [s["weight"] / 1000 for s in sets] == [72, 72, 48, 48, 48, 48, 81]
+
+
+def test_extra_garmin_set_is_skipped_and_sides_inferred_from_reps():
+    # As on 20 Oct: an extra set before the bench press, and a kettlebell press
+    # whose name does not say it is one-sided but whose reps show left + right.
+    w = hevy(("Bench Press (Barbell)", [(42, 8), (42, 10), (42, 10)]),
+             ("Kettlebell Shoulder Press", [(14, 10)] * 2),
+             ("Ball Slams", [(12, 6), (12, 7)]))
+    reps = (10, 8, 10, 10, 10, 10, 10, 10, 6, 7)
+    sets = [gset("UNKNOWN", None, reps=r) for r in reps]
+    pairs, note = sync.align_sets(sets, w)
+    assert "1 extra Garmin set(s) left alone" in note
+    assert "left + right for Kettlebell Shoulder Press" in note
+    sync.apply_hevy_sets(pairs)
+    assert [s["weight"] / 1000 for s in sets] == [0, 42, 42, 42, 14, 14, 14, 14, 12, 12]
 
 
 def test_align_gives_up_when_nothing_lines_up():

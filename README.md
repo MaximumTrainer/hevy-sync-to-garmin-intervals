@@ -16,11 +16,15 @@ changes nothing that is already right.
 
 ## How the sets are matched on Garmin
 
-Garmin groups the watch's sets by exercise. When Garmin and Hevy have the same
-number of exercises, sets are paired exercise by exercise; otherwise, when the
-total number of sets agrees, set by set. If neither lines up the Garmin sets are
-left alone (the name is still fixed) and the log says why. Exercise names on
-Garmin are never changed.
+Hevy logs a one-sided exercise (single-arm row, split squat, single-leg RDL…)
+as one set covering both sides; the watch records one set per side. The watch
+also sometimes picks up a set Hevy never saw. So each Hevy exercise is placed
+on either one Garmin set per Hevy set or two (left and right, both given the
+Hevy weight and reps), and stray Garmin sets can be skipped. The arrangement
+whose rep counts agree best wins; exercises with "single", "split squat",
+"lunge" and the like in their name are expected to be one-sided. If it cannot
+line the sets up the Garmin sets are left alone (the name is still fixed) and
+the log says why. Exercise names on Garmin are never changed.
 
 ## Setup
 

@@ -12,6 +12,13 @@ on:
         description: "Only log what would change"
         type: boolean
         default: false
+      all_history:
+        description: "Backfill: every Hevy workout ever recorded (ignores days)"
+        type: boolean
+        default: false
+      since:
+        description: "Backfill: every Hevy workout from this date on, YYYY-MM-DD (ignores days)"
+        default: ""
   push:
     branches: [main]
   pull_request:
@@ -33,6 +40,7 @@ jobs:
 
   sync:
     needs: test
+    timeout-minutes: 120   # a backfill over years of workouts takes a while
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     steps:
@@ -73,6 +81,8 @@ jobs:
           GARMIN_PASSWORD: ${{ secrets.GARMIN_PASSWORD }}
           LOOKBACK_DAYS: ${{ inputs.days || '2' }}
           DRY_RUN: ${{ inputs.dry_run && 'true' || '' }}
+          BACKFILL_ALL: ${{ inputs.all_history && 'true' || '' }}
+          BACKFILL_SINCE: ${{ inputs.since }}
         run: python sync.py
 
       - name: Save Garmin tokens

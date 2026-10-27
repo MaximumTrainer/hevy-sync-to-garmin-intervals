@@ -153,3 +153,89 @@ def test_load_env_file_keeps_existing_values(tmp_path, monkeypatch):
     assert os.environ["HEVY_API_KEY"] == "abc"
     assert os.environ["INTERVALS_API_KEY"] == "xyz"
     assert os.environ["LOOKBACK_DAYS"] == "2"
+
+
+class FakeResponse:
+    def __init__(self, body):
+        self.body = body
+
+    def raise_for_status(self):
+        pass
+
+    def json(self):
+        return self.body
+
+
+def hevy_page(starts, page, page_count):
+    return FakeResponse({"page": page, "page_count": page_count, "workouts": [
+        dict(RAW, id=s, start_time=s, end_time=s) for s in starts
+    ]})
+
+
+def test_fetch_all_walks_every_page(monkeypatch):
+    pages = {
+        1: hevy_page(["2026-10-27T07:00:00+00:00", "2026-10-25T07:00:00+00:00"], 1, 2),
+        2: hevy_page(["2024-01-02T07:00:00+00:00"], 2, 2),
+    }
+    monkeypatch.setattr(sync.requests, "get", lambda *a, params, **k: pages[params["page"]])
+    every = sync.fetch_hevy_workouts("key", None)
+    assert [w.id[:4] for w in every] == ["2024", "2026", "2026"]  # oldest first
+    recent = sync.fetch_hevy_workouts("key", datetime(2026, 10, 26, tzinfo=timezone.utc))
+    assert [w.id[:10] for w in recent] == ["2026-10-27"]
+
+
+class FakeGarmin:
+    def __init__(self, activities):
+        self.activities = activities
+        self.ranges, self.renamed = [], {}
+
+    def get_activities_by_date(self, start, end):
+        self.ranges.append((start, end))
+        return self.activities
+
+    def set_activity_name(self, aid, name):
+        self.renamed[aid] = name
+
+    def get_activity_exercise_sets(self, aid):
+        return {"exerciseSets": []}
+
+
+class FakeIntervals:
+    def __init__(self, acts):
+        self.acts, self.ranges, self.updates = acts, [], {}
+
+    def activities(self, oldest, newest):
+        self.ranges.append((oldest, newest))
+        return self.acts
+
+    def update(self, aid, changes):
+        self.updates[aid] = changes
+
+
+def test_backfill_lists_each_side_once_and_matches_every_workout(monkeypatch):
+    w_old = sync.parse_hevy_workout(dict(RAW, id="old", start_time="2025-03-01T18:00:00+00:00",
+                                         end_time="2025-03-01T19:00:00+00:00"))
+    w_new = workout()
+    garmin = FakeGarmin([
+        {"activityId": 1, "activityName": "Strength", "startTimeGMT": "2025-03-01 18:01:00",
+         "activityType": {"typeKey": "strength_training"}},
+        {"activityId": 2, "activityName": "Strength B", "startTimeGMT": "2026-10-27 07:08:38",
+         "activityType": {"typeKey": "strength_training"}},
+    ])
+    icu = FakeIntervals([
+        {"id": "i1", "type": "WeightTraining", "external_id": "1", "start_date": "2025-03-01T18:01:00Z"},
+        {"id": "i2", "type": "WeightTraining", "external_id": "2", "start_date": "2026-10-27T07:08:38Z"},
+    ])
+    monkeypatch.setattr(sync, "fetch_hevy_workouts", lambda key, since: [w_old, w_new])
+    monkeypatch.setattr(sync, "garmin_login", lambda store: garmin)
+    monkeypatch.setattr(sync, "Intervals", lambda key, athlete: icu)
+    monkeypatch.setattr(sync, "BACKFILL_PAUSE", 0)
+    monkeypatch.setenv("HEVY_API_KEY", "k")
+    monkeypatch.setenv("INTERVALS_API_KEY", "k")
+    monkeypatch.setenv("GARMIN_PASSWORD", "p")
+
+    assert sync.main(["--all"]) == 0
+    assert garmin.ranges == [("2025-02-28", "2026-10-28")]
+    assert icu.ranges == [("2025-02-28", "2026-10-28")]
+    assert garmin.renamed == {1: w_old.title, 2: w_new.title}
+    assert set(icu.updates) == {"i1", "i2"}

@@ -32,6 +32,9 @@ this. This job copies it across.
 Nothing else is touched: not the exercise names Garmin chose, not heart rate,
 not training load, and never notes you wrote yourself.
 
+You choose what it updates: Garmin and Intervals.icu (the default), or only
+one of them. See [Choosing what to update](#choosing-what-to-update).
+
 Every run looks at the Hevy workouts from the last two days, so one missed run
 catches up on the next. To bring older sessions into line as well, run a
 [backfill](#backfilling-your-history) once. Running it again changes nothing that is already right,
@@ -63,6 +66,28 @@ says why in the log.
 > **Dumbbells:** each side gets the full weight you typed into Hevy. If you log
 > the *combined* weight of two dumbbells, the Garmin sets will show that total
 > on each side.
+
+## Choosing what to update
+
+| Target | Updates | Needs |
+|---|---|---|
+| `both` (default) | Garmin Connect and Intervals.icu | the Garmin tokens and `INTERVALS_API_KEY` |
+| `garmin` | Garmin Connect only | the Garmin tokens |
+| `intervals` | Intervals.icu only | `INTERVALS_API_KEY` |
+
+- **One run from GitHub Actions:** pick **target** under **Actions → sync → Run
+  workflow**.
+- **The daily run:** in your repository go to **Settings → Secrets and
+  variables → Actions → Variables** and add a variable `SYNC_TARGET` set to
+  `garmin` or `intervals`. Without it the daily run updates both.
+- **On your own computer:** pass `--target garmin` or `--target intervals`, or
+  put `SYNC_TARGET=garmin` in `.env`.
+
+With `intervals`, the job doesn't log in to Garmin at all and finds each
+Intervals.icu activity by its start time alone, so you don't need to set up
+Garmin. With `garmin` or `intervals`, the run fails if that service's
+credentials are missing, so a broken setup doesn't go unnoticed. With `both`,
+a service with no credentials is skipped with a warning.
 
 ## Backfilling your history
 
@@ -110,8 +135,9 @@ backfill a year at a time with **since**, or run it from your own computer.
 .venv/bin/python sync.py --since 2025-01-01       # every workout from 1 Jan 2025
 ```
 
-On a local run there is no time limit. `--skip-garmin` or `--skip-intervals`
-limits a backfill to one side.
+On a local run there is no time limit. `--target garmin` or
+`--target intervals` limits a backfill to one side, on GitHub Actions as well
+as locally.
 
 ## Get started
 
@@ -121,8 +147,9 @@ Python 3.12+ on your own computer for a one-off Garmin login.
 
 Setup takes about 15 minutes. Follow **[docs/SETUP.md](docs/SETUP.md)**.
 
-You don't have to use both: without Garmin credentials the job only updates
-Intervals.icu, and `--skip-intervals` does the reverse.
+You don't have to use both: see
+[Choosing what to update](#choosing-what-to-update) to update only Garmin or
+only Intervals.icu.
 
 ## Running it on your own computer
 
@@ -166,7 +193,9 @@ can run it by hand or have the computer run it every day.
 
 Options: `--days N` (how far back to look, default 2), `--all` or
 `--since YYYY-MM-DD` (a [backfill](#backfilling-your-history)), `--dry-run`,
-`--skip-garmin`, `--skip-intervals`. Any service left out of `.env` is skipped.
+`--target both|garmin|intervals` (see
+[Choosing what to update](#choosing-what-to-update)). With the default
+`both`, any service left out of `.env` is skipped.
 To keep `.env` somewhere else, point `HEVY_SYNC_ENV_FILE` at it.
 
 ### Run it every day as a service

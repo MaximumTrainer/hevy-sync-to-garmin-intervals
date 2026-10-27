@@ -239,3 +239,45 @@ def test_backfill_lists_each_side_once_and_matches_every_workout(monkeypatch):
     assert icu.ranges == [("2025-02-28", "2026-10-28")]
     assert garmin.renamed == {1: w_old.title, 2: w_new.title}
     assert set(icu.updates) == {"i1", "i2"}
+
+
+def one_workout_on_both_sides(monkeypatch):
+    garmin = FakeGarmin([
+        {"activityId": 2, "activityName": "Strength B", "startTimeGMT": "2026-10-27 07:08:38",
+         "activityType": {"typeKey": "strength_training"}},
+    ])
+    icu = FakeIntervals([
+        {"id": "i2", "type": "WeightTraining", "external_id": "2", "start_date": "2026-10-27T07:08:38Z"},
+    ])
+    monkeypatch.setattr(sync, "fetch_hevy_workouts", lambda key, since: [workout()])
+    monkeypatch.setattr(sync, "garmin_login", lambda store: garmin)
+    monkeypatch.setattr(sync, "Intervals", lambda key, athlete: icu)
+    monkeypatch.setenv("HEVY_API_KEY", "k")
+    monkeypatch.setenv("INTERVALS_API_KEY", "k")
+    monkeypatch.setenv("GARMIN_PASSWORD", "p")
+    monkeypatch.delenv("SYNC_TARGET", raising=False)
+    return garmin, icu
+
+
+def test_target_garmin_leaves_intervals_alone(monkeypatch):
+    garmin, icu = one_workout_on_both_sides(monkeypatch)
+    assert sync.main(["--target", "garmin"]) == 0
+    assert garmin.renamed == {2: workout().title}
+    assert icu.ranges == [] and icu.updates == {}
+
+
+def test_target_intervals_from_env_leaves_garmin_alone(monkeypatch):
+    garmin, icu = one_workout_on_both_sides(monkeypatch)
+    monkeypatch.setenv("SYNC_TARGET", "intervals")
+    assert sync.main([]) == 0
+    assert garmin.ranges == [] and garmin.renamed == {}
+    assert set(icu.updates) == {"i2"}  # matched by start time, without Garmin
+
+
+def test_chosen_target_without_credentials_fails(monkeypatch):
+    garmin, icu = one_workout_on_both_sides(monkeypatch)
+    monkeypatch.delenv("INTERVALS_API_KEY")
+    assert sync.main(["--target", "intervals"]) == 1
+    monkeypatch.setenv("GARMINTOKENS", "/nonexistent")
+    monkeypatch.delenv("GARMIN_PASSWORD")
+    assert sync.main(["--target", "both"]) == 0  # "both" skips a missing side quietly

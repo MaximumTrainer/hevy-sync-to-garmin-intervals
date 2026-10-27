@@ -10,8 +10,9 @@ This gets the daily sync running in your own GitHub account. It takes about
 - a **Garmin Connect** account
 - Python 3.12 or newer on your own computer, used once for the Garmin login
 
-Intervals.icu and Garmin are both optional: leave out one's secret and the job
-skips it.
+Intervals.icu and Garmin are both optional. To update only one of them, skip
+the other one's steps below and set the target as described in
+[Choosing what to update](../README.md#choosing-what-to-update).
 
 ## 1. Get your own copy of the repository
 

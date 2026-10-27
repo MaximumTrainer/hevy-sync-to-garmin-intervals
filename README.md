@@ -76,18 +76,176 @@ Intervals.icu, and `--skip-intervals` does the reverse.
 
 ## Running it on your own computer
 
-```
-pip install -r requirements.txt
-export HEVY_API_KEY=… INTERVALS_API_KEY=…
-python sync.py --dry-run --days 7      # show what would change
-python sync.py --days 7                # change it
-python -m pytest -q                    # tests
-```
+You don't need GitHub Actions. The job runs fine from your own computer, and you
+can run it by hand or have the computer run it every day.
+
+### One-off setup (all platforms)
+
+1. Install Python 3.12 or newer and git, then get the code and a virtual
+   environment:
+
+   ```
+   git clone https://github.com/<you>/garmin-hevy-intervals-sync.git
+   cd garmin-hevy-intervals-sync
+   python3 -m venv .venv                     # Windows: py -3.12 -m venv .venv
+   .venv/bin/pip install -r requirements.txt # Windows: .venv\Scripts\pip install -r requirements.txt
+   ```
+
+2. Copy `.env.example` to `.env` in the same folder and fill in your
+   `HEVY_API_KEY` and `INTERVALS_API_KEY` (see [docs/SETUP.md](docs/SETUP.md),
+   steps 2 and 3, for where to get them). `sync.py` reads `.env` by itself, so
+   no scheduler needs to know your keys. `.env` is git-ignored. Keep it to your
+   own user account (`chmod 600 .env` on Linux and macOS).
+
+3. Log in to Garmin once:
+
+   ```
+   .venv/bin/python scripts/garmin_login.py        # Windows: .venv\Scripts\python scripts\garmin_login.py
+   ```
+
+   This saves the tokens to `~/.garminconnect` (`%USERPROFILE%\.garminconnect`
+   on Windows). `sync.py` uses them from there and keeps them refreshed. The
+   line the script prints is only needed for GitHub Actions.
+
+4. Try it:
+
+   ```
+   .venv/bin/python sync.py --dry-run --days 7      # show what would change
+   .venv/bin/python sync.py --days 7                # change it
+   ```
 
 Options: `--days N` (how far back to look, default 2), `--dry-run`,
-`--skip-garmin`, `--skip-intervals`. For Garmin, run `scripts/garmin_login.py`
-once first; it saves its tokens to `~/.garminconnect`, where `sync.py` finds
-them.
+`--skip-garmin`, `--skip-intervals`. Any service left out of `.env` is skipped.
+To keep `.env` somewhere else, point `HEVY_SYNC_ENV_FILE` at it.
+
+### Run it every day as a service
+
+The sync does its work in a few seconds and exits, so the right shape is a
+**daily scheduled job**, not a program that stays running. Each platform's own
+scheduler does this, and each can catch up on a run missed while the computer
+was off or asleep.
+
+Below, replace `/path/to/garmin-hevy-intervals-sync` with where you cloned the
+repository. Every example runs at 22:00 local time.
+
+#### Linux (systemd user timer)
+
+Create `~/.config/systemd/user/hevy-sync.service`:
+
+```ini
+[Unit]
+Description=Sync Hevy workouts to Garmin Connect and Intervals.icu
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/path/to/garmin-hevy-intervals-sync
+ExecStart=/path/to/garmin-hevy-intervals-sync/.venv/bin/python sync.py
+```
+
+and `~/.config/systemd/user/hevy-sync.timer`:
+
+```ini
+[Unit]
+Description=Run the Hevy sync every day
+
+[Timer]
+OnCalendar=*-*-* 22:00:00
+Persistent=true
+RandomizedDelaySec=5min
+
+[Install]
+WantedBy=timers.target
+```
+
+Then:
+
+```
+systemctl --user daemon-reload
+systemctl --user enable --now hevy-sync.timer
+loginctl enable-linger "$USER"          # keep running when you're logged out
+systemctl --user start hevy-sync        # run it once now
+journalctl --user -u hevy-sync          # read the log
+systemctl --user list-timers hevy-sync  # see when it runs next
+```
+
+`Persistent=true` runs a missed job as soon as the machine is back on. No
+systemd? Add a cron line instead (`crontab -e`):
+`0 22 * * * cd /path/to/garmin-hevy-intervals-sync && .venv/bin/python sync.py >> sync.log 2>&1`
+
+#### macOS (launchd agent)
+
+Create `~/Library/LaunchAgents/com.github.hevy-sync.plist`:
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.github.hevy-sync</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/path/to/garmin-hevy-intervals-sync/.venv/bin/python</string>
+    <string>sync.py</string>
+  </array>
+  <key>WorkingDirectory</key><string>/path/to/garmin-hevy-intervals-sync</string>
+  <key>StartCalendarInterval</key>
+  <dict>
+    <key>Hour</key><integer>22</integer>
+    <key>Minute</key><integer>0</integer>
+  </dict>
+  <key>StandardOutPath</key><string>/path/to/garmin-hevy-intervals-sync/sync.log</string>
+  <key>StandardErrorPath</key><string>/path/to/garmin-hevy-intervals-sync/sync.log</string>
+</dict>
+</plist>
+```
+
+Then:
+
+```
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.github.hevy-sync.plist
+launchctl kickstart gui/$(id -u)/com.github.hevy-sync   # run it once now
+tail sync.log                                           # read the log
+```
+
+If the Mac is asleep at 22:00, launchd runs the job when it wakes. To stop it:
+`launchctl bootout gui/$(id -u)/com.github.hevy-sync`.
+
+Don't keep the clone in Desktop, Documents or Downloads. macOS stops background
+jobs reading those folders unless you grant them Full Disk Access.
+
+#### Windows (Task Scheduler)
+
+In PowerShell, from the repository folder:
+
+```powershell
+$repo   = (Get-Location).Path
+$action = New-ScheduledTaskAction -Execute "$repo\.venv\Scripts\python.exe" `
+            -Argument "sync.py" -WorkingDirectory $repo
+$daily  = New-ScheduledTaskTrigger -Daily -At 22:00
+$opts   = New-ScheduledTaskSettingsSet -StartWhenAvailable -RunOnlyIfNetworkAvailable `
+            -ExecutionTimeLimit (New-TimeSpan -Minutes 10)
+Register-ScheduledTask -TaskName "Hevy sync" -Action $action -Trigger $daily -Settings $opts `
+  -Description "Sync Hevy workouts to Garmin Connect and Intervals.icu"
+
+Start-ScheduledTask -TaskName "Hevy sync"     # run it once now
+Get-ScheduledTaskInfo -TaskName "Hevy sync"   # LastTaskResult 0 means it worked
+```
+
+`-StartWhenAvailable` runs a missed job as soon as the PC is back on. The task
+runs as you, while you're signed in. To run it when you're signed out too, open
+Task Scheduler, find **Hevy sync**, open Properties, and choose **Run whether
+user is logged on or not**. To keep a log, use
+`-Execute "cmd.exe" -Argument "/c .venv\Scripts\python.exe sync.py >> sync.log 2>&1"`
+instead. To remove the task: `Unregister-ScheduledTask -TaskName "Hevy sync"`.
+
+### Running the tests
+
+```
+.venv/bin/pip install pytest
+.venv/bin/python -m pytest -q
+```
 
 ## Caveats
 

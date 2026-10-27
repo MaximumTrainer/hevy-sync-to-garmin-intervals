@@ -88,3 +88,6 @@ Thumbs.db
 # Garmin login tokens: never commit these
 .garminconnect/
 garmin_tokens.json
+
+# Local run logs
+sync.log

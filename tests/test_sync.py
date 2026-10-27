@@ -140,3 +140,16 @@ def test_normalise_decodes_base64_tokens(tmp_path):
     f.write_text(base64.b64encode(json.dumps(data).encode()).decode())
     sync.normalise_token_file(f)
     assert json.loads(f.read_text()) == data
+
+
+def test_load_env_file_keeps_existing_values(tmp_path, monkeypatch):
+    f = tmp_path / ".env"
+    f.write_text('# comment\nexport HEVY_API_KEY="abc"\nINTERVALS_API_KEY=xyz\nLOOKBACK_DAYS=5\n')
+    monkeypatch.delenv("HEVY_API_KEY", raising=False)
+    monkeypatch.delenv("INTERVALS_API_KEY", raising=False)
+    monkeypatch.setenv("LOOKBACK_DAYS", "2")
+    sync.load_env_file(f)
+    import os
+    assert os.environ["HEVY_API_KEY"] == "abc"
+    assert os.environ["INTERVALS_API_KEY"] == "xyz"
+    assert os.environ["LOOKBACK_DAYS"] == "2"

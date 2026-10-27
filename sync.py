@@ -447,19 +447,23 @@ def main(argv: list[str] | None = None) -> int:
     if not workouts:
         return 0
 
+    failures = 0
     garmin = None
     if not args.skip_garmin:
         tokenstore = os.getenv("GARMINTOKENS") or str(Path("~/.garminconnect").expanduser())
         has_tokens = (Path(tokenstore) / "garmin_tokens.json").is_file() or Path(tokenstore).is_file()
         if has_tokens or os.getenv("GARMIN_PASSWORD"):
-            garmin = garmin_login(tokenstore)
+            try:
+                garmin = garmin_login(tokenstore)
+            except Exception:  # noqa: BLE001 - still update Intervals
+                failures += 1
+                log.exception("Garmin login failed, skipping Garmin")
         else:
             log.warning("Garmin: no tokens or password configured, skipping Garmin")
     icu = None
     if not args.skip_intervals:
         icu = Intervals(os.environ["INTERVALS_API_KEY"], os.getenv("INTERVALS_ATHLETE_ID", "0"))
 
-    failures = 0
     for w in workouts:
         log.info("== %s  %s", w.start.isoformat(timespec="minutes"), w.title)
         g = None

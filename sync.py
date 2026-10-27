@@ -31,6 +31,7 @@ log = logging.getLogger("hevy-sync")
 HEVY_API = "https://api.hevyapp.com/v1"
 INTERVALS_API = "https://intervals.icu/api/v1"
 MATCH_WINDOW = timedelta(minutes=20)
+TARGETS = ("both", "garmin", "intervals")  # choices for --target / SYNC_TARGET
 BACKFILL_THRESHOLD = 10   # more workouts than this in one run counts as a backfill
 BACKFILL_PAUSE = 1.0      # seconds between workouts on a backfill
 DESCRIPTION_MARKER = "— synced from Hevy —"
@@ -519,10 +520,19 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--dry-run", action="store_true",
                    default=os.getenv("DRY_RUN", "").lower() in {"1", "true", "yes"},
                    help="log what would change without changing anything")
-    p.add_argument("--skip-garmin", action="store_true")
-    p.add_argument("--skip-intervals", action="store_true")
+    p.add_argument("--target", choices=TARGETS, default=os.getenv("SYNC_TARGET") or "both",
+                   help="which service to update: garmin, intervals or both (default both)")
+    p.add_argument("--skip-garmin", action="store_true", help="same as --target intervals")
+    p.add_argument("--skip-intervals", action="store_true", help="same as --target garmin")
     args = p.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
+    want_garmin = args.target in {"both", "garmin"} and not args.skip_garmin
+    want_intervals = args.target in {"both", "intervals"} and not args.skip_intervals
+    if not (want_garmin or want_intervals):
+        p.error("nothing to update: --target and --skip-* leave out both Garmin and Intervals.icu")
+    # A service the user picked on its own must be configured; with "both", a
+    # missing one is skipped so either half of the setup works by itself.
+    required = args.target != "both"
 
     if args.all:
         since, label = None, "in your whole Hevy history"
@@ -540,7 +550,7 @@ def main(argv: list[str] | None = None) -> int:
 
     failures = 0
     garmin = None
-    if not args.skip_garmin:
+    if want_garmin:
         tokenstore = os.getenv("GARMINTOKENS") or str(Path("~/.garminconnect").expanduser())
         has_tokens = (Path(tokenstore) / "garmin_tokens.json").is_file() or Path(tokenstore).is_file()
         if has_tokens or os.getenv("GARMIN_PASSWORD"):
@@ -549,12 +559,18 @@ def main(argv: list[str] | None = None) -> int:
             except Exception:  # noqa: BLE001 - still update Intervals
                 failures += 1
                 log.exception("Garmin login failed, skipping Garmin")
+        elif required:
+            failures += 1
+            log.error("Garmin: target is garmin but no tokens or password are configured")
         else:
             log.warning("Garmin: no tokens or password configured, skipping Garmin")
     icu = None
-    if not args.skip_intervals:
+    if want_intervals:
         if os.getenv("INTERVALS_API_KEY"):
             icu = Intervals(os.environ["INTERVALS_API_KEY"], os.getenv("INTERVALS_ATHLETE_ID", "0"))
+        elif required:
+            failures += 1
+            log.error("Intervals.icu: target is intervals but no INTERVALS_API_KEY is configured")
         else:
             log.warning("Intervals.icu: no INTERVALS_API_KEY configured, skipping Intervals.icu")
 
@@ -601,10 +617,10 @@ def main(argv: list[str] | None = None) -> int:
             except Exception:  # noqa: BLE001
                 failures += 1
                 log.exception("Intervals update failed")
-    log.info(
-        "Done: %d Hevy workout(s); matched %d on Garmin, %d on Intervals.icu; %d error(s)",
-        len(workouts), matched["garmin"], matched["intervals"], failures,
-    )
+    sides = [f"{matched['garmin']} on Garmin"] * want_garmin
+    sides += [f"{matched['intervals']} on Intervals.icu"] * want_intervals
+    log.info("Done: %d Hevy workout(s); matched %s; %d error(s)",
+             len(workouts), ", ".join(sides), failures)
     return 1 if failures else 0
 
 

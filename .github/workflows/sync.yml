@@ -19,6 +19,11 @@ on:
       since:
         description: "Backfill: every Hevy workout from this date on, YYYY-MM-DD (ignores days)"
         default: ""
+      target:
+        description: "Which service to update"
+        type: choice
+        options: [both, garmin, intervals]
+        default: both
   push:
     branches: [main]
   pull_request:
@@ -83,6 +88,9 @@ jobs:
           DRY_RUN: ${{ inputs.dry_run && 'true' || '' }}
           BACKFILL_ALL: ${{ inputs.all_history && 'true' || '' }}
           BACKFILL_SINCE: ${{ inputs.since }}
+          # The daily run has no inputs: set the repository variable SYNC_TARGET
+          # to garmin or intervals to change what it updates.
+          SYNC_TARGET: ${{ inputs.target || vars.SYNC_TARGET || 'both' }}
         run: python sync.py
 
       - name: Save Garmin tokens

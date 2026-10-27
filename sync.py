@@ -18,8 +18,9 @@ import argparse
 import logging
 import os
 import sys
+import time
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -30,6 +31,8 @@ log = logging.getLogger("hevy-sync")
 HEVY_API = "https://api.hevyapp.com/v1"
 INTERVALS_API = "https://intervals.icu/api/v1"
 MATCH_WINDOW = timedelta(minutes=20)
+BACKFILL_THRESHOLD = 10   # more workouts than this in one run counts as a backfill
+BACKFILL_PAUSE = 1.0      # seconds between workouts on a backfill
 DESCRIPTION_MARKER = "— synced from Hevy —"
 GARMIN_STRENGTH_TYPES = {"strength_training", "indoor_cardio", "hiit"}
 INTERVALS_STRENGTH_TYPES = {"WeightTraining", "Workout", "HighIntensityIntervalTraining"}
@@ -100,8 +103,8 @@ def parse_hevy_workout(raw: dict[str, Any]) -> HevyWorkout:
     )
 
 
-def fetch_hevy_workouts(api_key: str, since: datetime) -> list[HevyWorkout]:
-    """Workouts that started at or after `since`, oldest first."""
+def fetch_hevy_workouts(api_key: str, since: datetime | None) -> list[HevyWorkout]:
+    """Workouts that started at or after `since` (or every workout, if None), oldest first."""
     workouts: list[HevyWorkout] = []
     page = 1
     while True:
@@ -114,9 +117,10 @@ def fetch_hevy_workouts(api_key: str, since: datetime) -> list[HevyWorkout]:
         r.raise_for_status()
         body = r.json()
         batch = [parse_hevy_workout(w) for w in body.get("workouts", [])]
-        workouts.extend(w for w in batch if w.start >= since)
+        workouts.extend(w for w in batch if since is None or w.start >= since)
         # Hevy lists newest first, so once a page reaches past `since` we are done.
-        if not batch or batch[-1].start < since or page >= body.get("page_count", page):
+        past_since = since is not None and batch and batch[-1].start < since
+        if not batch or past_since or page >= body.get("page_count", page):
             break
         page += 1
     return sorted(workouts, key=lambda w: w.start)
@@ -363,16 +367,22 @@ def garmin_login(tokenstore: str | None):
     return client
 
 
-def sync_garmin(client, workout: HevyWorkout, dry_run: bool) -> dict[str, Any] | None:
-    day = workout.start.date()
+def garmin_strength_activities(client, first: datetime, last: datetime) -> list[dict[str, Any]]:
+    """Every Garmin strength activity from the day before `first` to the day after `last`."""
     activities = client.get_activities_by_date(
-        (day - timedelta(days=1)).isoformat(), (day + timedelta(days=1)).isoformat()
+        (first.date() - timedelta(days=1)).isoformat(),
+        (last.date() + timedelta(days=1)).isoformat(),
     )
-    strength = [
+    return [
         a for a in activities
         if (a.get("activityType") or {}).get("typeKey") in GARMIN_STRENGTH_TYPES
     ]
-    match = closest_by_start(strength, garmin_start, workout.start)
+
+
+def sync_garmin(
+    client, workout: HevyWorkout, candidates: list[dict[str, Any]], dry_run: bool
+) -> dict[str, Any] | None:
+    match = closest_by_start(candidates, garmin_start, workout.start)
     if not match:
         log.info("Garmin: no strength activity within %s of %s", MATCH_WINDOW, workout.start)
         return None
@@ -412,13 +422,14 @@ class Intervals:
         self.athlete = athlete_id
 
     def activities(self, oldest: str, newest: str) -> list[dict[str, Any]]:
+        """Activities between two dates (inclusive), Strava-sourced stubs left out."""
         r = self.s.get(
             f"{INTERVALS_API}/athlete/{self.athlete}/activities",
             params={"oldest": oldest, "newest": newest},
             timeout=30,
         )
         r.raise_for_status()
-        return r.json()
+        return [a for a in r.json() if a.get("type")]  # Strava-sourced rows are empty stubs
 
     def update(self, activity_id: str, fields: dict[str, Any]) -> dict[str, Any]:
         r = self.s.put(f"{INTERVALS_API}/activity/{activity_id}", json=fields, timeout=30)
@@ -440,15 +451,13 @@ def intervals_changes(activity: dict[str, Any], workout: HevyWorkout) -> dict[st
 
 
 def sync_intervals(
-    icu: Intervals, workout: HevyWorkout, garmin_activity: dict[str, Any] | None, dry_run: bool
-) -> None:
-    day = workout.start.date()
-    acts = [
-        a for a in icu.activities(
-            (day - timedelta(days=1)).isoformat(), (day + timedelta(days=1)).isoformat()
-        )
-        if a.get("type")  # Strava-sourced rows come back as empty stubs
-    ]
+    icu: Intervals,
+    workout: HevyWorkout,
+    garmin_activity: dict[str, Any] | None,
+    acts: list[dict[str, Any]],
+    dry_run: bool,
+) -> bool:
+    """Update the Intervals.icu activity matching `workout`. Returns whether one was found."""
     match = None
     if garmin_activity:
         gid = str(garmin_activity["activityId"])
@@ -458,12 +467,12 @@ def sync_intervals(
         match = closest_by_start(strength, lambda a: parse_time(a["start_date"]), workout.start)
     if not match:
         log.info("Intervals: no matching activity for %s", workout.start)
-        return
+        return False
 
     changes = intervals_changes(match, workout)
     if not changes:
         log.info("Intervals %s: already up to date", match["id"])
-        return
+        return True
     for k, v in sorted(changes.items()):
         if k == "description":
             log.info("Intervals %s: description ->\n%s", match["id"], v)
@@ -471,6 +480,7 @@ def sync_intervals(
             log.info("Intervals %s: %s %r -> %r", match["id"], k, match.get(k), v)
     if not dry_run:
         icu.update(match["id"], changes)
+    return True
 
 
 # --------------------------------------------------------------------------- #
@@ -501,6 +511,11 @@ def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     p.add_argument("--days", type=int, default=int(os.getenv("LOOKBACK_DAYS", "2")),
                    help="sync Hevy workouts from the last N days (default 2)")
+    p.add_argument("--all", action="store_true",
+                   default=os.getenv("BACKFILL_ALL", "").lower() in {"1", "true", "yes"},
+                   help="backfill: sync every Hevy workout ever recorded")
+    p.add_argument("--since", type=date.fromisoformat, default=os.getenv("BACKFILL_SINCE") or None,
+                   metavar="YYYY-MM-DD", help="backfill: sync every Hevy workout from this date on")
     p.add_argument("--dry-run", action="store_true",
                    default=os.getenv("DRY_RUN", "").lower() in {"1", "true", "yes"},
                    help="log what would change without changing anything")
@@ -509,12 +524,19 @@ def main(argv: list[str] | None = None) -> int:
     args = p.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
 
-    since = datetime.now(timezone.utc) - timedelta(days=args.days)
+    if args.all:
+        since, label = None, "in your whole Hevy history"
+    elif args.since:
+        since = datetime.combine(args.since, datetime.min.time(), tzinfo=timezone.utc)
+        label = f"since {args.since}"
+    else:
+        since = datetime.now(timezone.utc) - timedelta(days=args.days)
+        label = f"since {since.date()}"
     workouts = fetch_hevy_workouts(os.environ["HEVY_API_KEY"], since)
-    log.info("Hevy: %d workout(s) since %s%s", len(workouts), since.date(),
-             " (dry run)" if args.dry_run else "")
+    log.info("Hevy: %d workout(s) %s%s", len(workouts), label, " (dry run)" if args.dry_run else "")
     if not workouts:
         return 0
+    first, last = workouts[0].start, workouts[-1].start
 
     failures = 0
     garmin = None
@@ -536,21 +558,53 @@ def main(argv: list[str] | None = None) -> int:
         else:
             log.warning("Intervals.icu: no INTERVALS_API_KEY configured, skipping Intervals.icu")
 
-    for w in workouts:
+    # Fetch each side's activities for the whole span once, rather than per workout:
+    # a backfill over years would otherwise make thousands of list calls.
+    garmin_acts: list[dict[str, Any]] = []
+    if garmin:
+        try:
+            garmin_acts = garmin_strength_activities(garmin, first, last)
+            log.info("Garmin: %d strength activities to match against", len(garmin_acts))
+        except Exception:  # noqa: BLE001 - still update Intervals
+            failures += 1
+            garmin = None
+            log.exception("Garmin: could not list activities, skipping Garmin")
+    icu_acts: list[dict[str, Any]] = []
+    if icu:
+        try:
+            icu_acts = icu.activities(
+                (first.date() - timedelta(days=1)).isoformat(),
+                (last.date() + timedelta(days=1)).isoformat(),
+            )
+            log.info("Intervals: %d activities to match against", len(icu_acts))
+        except Exception:  # noqa: BLE001 - still update Garmin
+            failures += 1
+            icu = None
+            log.exception("Intervals: could not list activities, skipping Intervals.icu")
+
+    matched = {"garmin": 0, "intervals": 0}
+    for n, w in enumerate(workouts):
         log.info("== %s  %s", w.start.isoformat(timespec="minutes"), w.title)
+        if n and len(workouts) > BACKFILL_THRESHOLD:
+            time.sleep(BACKFILL_PAUSE)  # be gentle with Garmin's unofficial API on a backfill
         g = None
         if garmin:
             try:
-                g = sync_garmin(garmin, w, args.dry_run)
+                g = sync_garmin(garmin, w, garmin_acts, args.dry_run)
+                matched["garmin"] += g is not None
             except Exception:  # noqa: BLE001 - carry on to Intervals and other workouts
                 failures += 1
                 log.exception("Garmin update failed")
         if icu:
             try:
-                sync_intervals(icu, w, g, args.dry_run)
+                matched["intervals"] += sync_intervals(icu, w, g, icu_acts, args.dry_run)
             except Exception:  # noqa: BLE001
                 failures += 1
                 log.exception("Intervals update failed")
+    log.info(
+        "Done: %d Hevy workout(s); matched %d on Garmin, %d on Intervals.icu; %d error(s)",
+        len(workouts), matched["garmin"], matched["intervals"], failures,
+    )
     return 1 if failures else 0
 
 

@@ -107,6 +107,13 @@ After that it runs by itself every day at 22:00 UTC, and you never need to
 touch it. To run it at another time, change the `cron` line in
 `.github/workflows/sync.yml` (the time is in UTC).
 
+## 8. Optional: fix up your older workouts
+
+The daily run only goes back two days. To apply the same changes to your whole
+Hevy history, run the workflow once with **all_history** ticked, or with a date
+in **since**. Do a dry run first. See
+[Backfilling your history](../README.md#backfilling-your-history) in the README.
+
 ## Troubleshooting
 
 **"Garmin login failed. the secret holds a single access token (a JWT)…"**

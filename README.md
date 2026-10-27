@@ -33,7 +33,8 @@ Nothing else is touched: not the exercise names Garmin chose, not heart rate,
 not training load, and never notes you wrote yourself.
 
 Every run looks at the Hevy workouts from the last two days, so one missed run
-catches up on the next. Running it again changes nothing that is already right,
+catches up on the next. To bring older sessions into line as well, run a
+[backfill](#backfilling-your-history) once. Running it again changes nothing that is already right,
 and a dry-run mode shows every change it would make without making it.
 
 ## How it finds the matching activities
@@ -62,6 +63,55 @@ says why in the log.
 > **Dumbbells:** each side gets the full weight you typed into Hevy. If you log
 > the *combined* weight of two dumbbells, the Garmin sets will show that total
 > on each side.
+
+## Backfilling your history
+
+The daily run only looks back two days. A **backfill** applies the same
+changes to every Hevy workout you have ever logged, or to every workout from a
+date you choose. Each workout is matched to its Garmin and Intervals.icu
+activity exactly as in the daily run, so the names, set weights, kg lifted and
+notes come out the same as if the job had been running all along.
+
+What to expect:
+
+- **Workouts with nothing to match are skipped.** If there was no Garmin
+  strength activity within 20 minutes of a Hevy workout (you didn't wear the
+  watch, or recorded it as another activity type), the log says so and moves
+  on. Intervals.icu is still updated if it has its own strength activity at
+  that time.
+- **It is safe to repeat.** Anything already right is left alone, so you can
+  run a backfill again, or stop one halfway and start it again.
+- **It is slower.** Every workout is a few calls to Garmin, and the job pauses
+  a second between workouts to stay gentle on Garmin's unofficial API. Expect
+  roughly a minute per 30 to 40 workouts. Garmin and Intervals.icu activities
+  are each listed once for the whole period, not once per workout.
+- **Do a dry run first.** On a large history, read the log before letting it
+  write. The last line sums the run up: how many Hevy workouts it found, how
+  many it matched on each side, and how many errors it hit.
+
+### From GitHub Actions
+
+**Actions → sync → Run workflow**, then either:
+
+- tick **all_history** to process every Hevy workout ever recorded, or
+- type a date such as `2025-01-01` into **since** to process every workout
+  from that date on.
+
+Leave **days** as it is; a backfill ignores it. Tick **dry run** the first time,
+check the log, then run it again with **dry run** unticked. The job is allowed
+up to two hours, enough for several years of training. For longer histories,
+backfill a year at a time with **since**, or run it from your own computer.
+
+### From your own computer
+
+```
+.venv/bin/python sync.py --all --dry-run          # every workout: show what would change
+.venv/bin/python sync.py --all                    # every workout: change it
+.venv/bin/python sync.py --since 2025-01-01       # every workout from 1 Jan 2025
+```
+
+On a local run there is no time limit. `--skip-garmin` or `--skip-intervals`
+limits a backfill to one side.
 
 ## Get started
 
@@ -114,7 +164,8 @@ can run it by hand or have the computer run it every day.
    .venv/bin/python sync.py --days 7                # change it
    ```
 
-Options: `--days N` (how far back to look, default 2), `--dry-run`,
+Options: `--days N` (how far back to look, default 2), `--all` or
+`--since YYYY-MM-DD` (a [backfill](#backfilling-your-history)), `--dry-run`,
 `--skip-garmin`, `--skip-intervals`. Any service left out of `.env` is skipped.
 To keep `.env` somewhere else, point `HEVY_SYNC_ENV_FILE` at it.
 

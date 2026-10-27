@@ -105,3 +105,13 @@ def test_describe_token_file_never_prints_values(tmp_path):
     assert "SECRET" not in msg and "missing" in msg
     f.write_text("not json SECRET")
     assert "SECRET" not in sync.describe_token_file(f)
+
+
+def test_normalise_decodes_base64_tokens(tmp_path):
+    import base64
+    import json
+    f = tmp_path / "garmin_tokens.json"
+    data = {"di_token": "a", "di_refresh_token": "b", "di_client_id": "c"}
+    f.write_text(base64.b64encode(json.dumps(data).encode()).decode())
+    sync.normalise_token_file(f)
+    assert json.loads(f.read_text()) == data

@@ -264,9 +264,40 @@ def describe_token_file(path: Path) -> str:
     return f"{path.name} looks complete"
 
 
+def normalise_token_file(path: Path) -> None:
+    """Accept tokens pasted base64-encoded, as some Garmin login tools print them."""
+    import base64
+    import binascii
+    import json
+
+    if not path.is_file():
+        return
+    text = path.read_text(encoding="utf-8").strip()
+    try:
+        json.loads(text)
+        return
+    except ValueError:
+        pass
+    try:
+        decoded = base64.b64decode(text + "=" * (-len(text) % 4), validate=False).decode("utf-8")
+        data = json.loads(decoded)
+    except (binascii.Error, UnicodeDecodeError, ValueError):
+        return
+    if isinstance(data, dict) and data.get("di_token"):
+        path.write_text(json.dumps(data), encoding="utf-8")
+        log.info("Garmin: decoded base64 tokens")
+    elif isinstance(data, list):
+        log.error(
+            "Garmin: these are old garth tokens (OAuth1/OAuth2), which garminconnect "
+            "0.3 no longer accepts. Run scripts/garmin_login.py and use its output."
+        )
+
+
 def garmin_login(tokenstore: str | None):
     from garminconnect import Garmin
 
+    if tokenstore:
+        normalise_token_file(Path(tokenstore) / "garmin_tokens.json")
     client = Garmin(os.getenv("GARMIN_EMAIL") or None, os.getenv("GARMIN_PASSWORD") or None)
     try:
         client.login(tokenstore)

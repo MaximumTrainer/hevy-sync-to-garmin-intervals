@@ -353,7 +353,11 @@ def sync_intervals(
     if not changes:
         log.info("Intervals %s: already up to date", match["id"])
         return
-    log.info("Intervals %s: update %s", match["id"], sorted(changes))
+    for k, v in sorted(changes.items()):
+        if k == "description":
+            log.info("Intervals %s: description ->\n%s", match["id"], v)
+        else:
+            log.info("Intervals %s: %s %r -> %r", match["id"], k, match.get(k), v)
     if not dry_run:
         icu.update(match["id"], changes)
 

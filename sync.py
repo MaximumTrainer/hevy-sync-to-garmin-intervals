@@ -476,7 +476,28 @@ def sync_intervals(
 # --------------------------------------------------------------------------- #
 
 
+def load_env_file(path: Path) -> None:
+    """Read KEY=VALUE lines into the environment, leaving variables already set alone.
+
+    Lets a local scheduler (systemd, launchd, Task Scheduler) run the sync with
+    nothing more than a `.env` file beside it.
+    """
+    if not path.is_file():
+        return
+    for line in path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key = key.strip().removeprefix("export ").strip()
+        value = value.strip()
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+            value = value[1:-1]
+        os.environ.setdefault(key, value)
+
+
 def main(argv: list[str] | None = None) -> int:
+    load_env_file(Path(os.getenv("HEVY_SYNC_ENV_FILE") or Path(__file__).with_name(".env")))
     p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     p.add_argument("--days", type=int, default=int(os.getenv("LOOKBACK_DAYS", "2")),
                    help="sync Hevy workouts from the last N days (default 2)")
@@ -510,7 +531,10 @@ def main(argv: list[str] | None = None) -> int:
             log.warning("Garmin: no tokens or password configured, skipping Garmin")
     icu = None
     if not args.skip_intervals:
-        icu = Intervals(os.environ["INTERVALS_API_KEY"], os.getenv("INTERVALS_ATHLETE_ID", "0"))
+        if os.getenv("INTERVALS_API_KEY"):
+            icu = Intervals(os.environ["INTERVALS_API_KEY"], os.getenv("INTERVALS_ATHLETE_ID", "0"))
+        else:
+            log.warning("Intervals.icu: no INTERVALS_API_KEY configured, skipping Intervals.icu")
 
     for w in workouts:
         log.info("== %s  %s", w.start.isoformat(timespec="minutes"), w.title)

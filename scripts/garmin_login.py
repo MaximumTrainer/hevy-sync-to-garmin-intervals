@@ -9,6 +9,7 @@ password or an MFA code.
 """
 
 import getpass
+from pathlib import Path
 
 from garminconnect import Garmin
 
@@ -16,5 +17,7 @@ email = input("Garmin email: ")
 password = getpass.getpass("Garmin password: ")
 client = Garmin(email, password, prompt_mfa=lambda: input("MFA code: "))
 client.login()
+# Also keep a copy where sync.py looks for it, for running the sync locally.
+client.client.dump(str(Path("~/.garminconnect").expanduser()))
 print("\nCopy everything on the next line into the GARMIN_TOKENS secret:\n")
 print(client.client.dumps())

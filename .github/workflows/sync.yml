@@ -91,7 +91,7 @@ jobs:
           # The daily run has no inputs: set the repository variable SYNC_TARGET
           # to garmin or intervals to change what it updates.
           SYNC_TARGET: ${{ inputs.target || vars.SYNC_TARGET || 'both' }}
-        run: python sync.py
+        run: python probe.py
 
       - name: Save Garmin tokens
         if: success()

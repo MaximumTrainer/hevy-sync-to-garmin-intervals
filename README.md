@@ -1,4 +1,4 @@
-# garmin-hevy-intervals-sync
+# hevy-sync-to-garmin-intervals
 
 Log your lifting in [Hevy](https://www.hevyapp.com/), wear a Garmin watch while
 you do it, and this job makes the Garmin Connect and
@@ -85,8 +85,8 @@ can run it by hand or have the computer run it every day.
    environment:
 
    ```
-   git clone https://github.com/<you>/garmin-hevy-intervals-sync.git
-   cd garmin-hevy-intervals-sync
+   git clone https://github.com/<you>/hevy-sync-to-garmin-intervals.git
+   cd hevy-sync-to-garmin-intervals
    python3 -m venv .venv                     # Windows: py -3.12 -m venv .venv
    .venv/bin/pip install -r requirements.txt # Windows: .venv\Scripts\pip install -r requirements.txt
    ```
@@ -125,7 +125,7 @@ The sync does its work in a few seconds and exits, so the right shape is a
 scheduler does this, and each can catch up on a run missed while the computer
 was off or asleep.
 
-Below, replace `/path/to/garmin-hevy-intervals-sync` with where you cloned the
+Below, replace `/path/to/hevy-sync-to-garmin-intervals` with where you cloned the
 repository. Every example runs at 22:00 local time.
 
 #### Linux (systemd user timer)
@@ -140,8 +140,8 @@ After=network-online.target
 
 [Service]
 Type=oneshot
-WorkingDirectory=/path/to/garmin-hevy-intervals-sync
-ExecStart=/path/to/garmin-hevy-intervals-sync/.venv/bin/python sync.py
+WorkingDirectory=/path/to/hevy-sync-to-garmin-intervals
+ExecStart=/path/to/hevy-sync-to-garmin-intervals/.venv/bin/python sync.py
 ```
 
 and `~/.config/systemd/user/hevy-sync.timer`:
@@ -172,7 +172,7 @@ systemctl --user list-timers hevy-sync  # see when it runs next
 
 `Persistent=true` runs a missed job as soon as the machine is back on. No
 systemd? Add a cron line instead (`crontab -e`):
-`0 22 * * * cd /path/to/garmin-hevy-intervals-sync && .venv/bin/python sync.py >> sync.log 2>&1`
+`0 22 * * * cd /path/to/hevy-sync-to-garmin-intervals && .venv/bin/python sync.py >> sync.log 2>&1`
 
 #### macOS (launchd agent)
 
@@ -186,17 +186,17 @@ Create `~/Library/LaunchAgents/com.github.hevy-sync.plist`:
   <key>Label</key><string>com.github.hevy-sync</string>
   <key>ProgramArguments</key>
   <array>
-    <string>/path/to/garmin-hevy-intervals-sync/.venv/bin/python</string>
+    <string>/path/to/hevy-sync-to-garmin-intervals/.venv/bin/python</string>
     <string>sync.py</string>
   </array>
-  <key>WorkingDirectory</key><string>/path/to/garmin-hevy-intervals-sync</string>
+  <key>WorkingDirectory</key><string>/path/to/hevy-sync-to-garmin-intervals</string>
   <key>StartCalendarInterval</key>
   <dict>
     <key>Hour</key><integer>22</integer>
     <key>Minute</key><integer>0</integer>
   </dict>
-  <key>StandardOutPath</key><string>/path/to/garmin-hevy-intervals-sync/sync.log</string>
-  <key>StandardErrorPath</key><string>/path/to/garmin-hevy-intervals-sync/sync.log</string>
+  <key>StandardOutPath</key><string>/path/to/hevy-sync-to-garmin-intervals/sync.log</string>
+  <key>StandardErrorPath</key><string>/path/to/hevy-sync-to-garmin-intervals/sync.log</string>
 </dict>
 </plist>
 ```
@@ -257,3 +257,7 @@ instead. To remove the task: `Unregister-ScheduledTask -TaskName "Hevy sync"`.
   own workflow runs can read. Anyone with write access to your repository could
   change the workflow to read them, so don't give out write access lightly.
 - This is a personal project, not affiliated with Hevy, Garmin or Intervals.icu.
+
+## License
+
+[MIT](LICENSE)

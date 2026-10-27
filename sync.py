@@ -238,8 +238,12 @@ def apply_hevy_sets(pairs: list[tuple[dict[str, Any], HevySet]]) -> int:
             g["weight"] = float(h.weight_kg) * 1000.0
         if h.reps is not None:
             g["repetitionCount"] = int(h.reps)
-        if (g.get("weight"), g.get("repetitionCount")) != before:
+        after = (g.get("weight"), g.get("repetitionCount"))
+        if after != before:
             changed += 1
+            ex = (g.get("exercises") or [{}])[0]
+            log.info("  %s/%s: weight %sg reps %s -> weight %sg reps %s",
+                     ex.get("category"), ex.get("name"), *before, *after)
     return changed
 
 

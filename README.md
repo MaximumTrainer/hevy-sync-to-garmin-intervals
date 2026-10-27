@@ -80,10 +80,11 @@ The job:
    `set` messages;
 2. lines up the active sets with the Hevy sets, the same way as for Garmin
    (above);
-3. turns each set into an interval at the same point in the recording: **WORK**
-   for an active set, labelled e.g. `Bench Press (Barbell): 42kg×10` (or
-   `Extra set (not in Hevy)` for a set Hevy doesn't have), and **RECOVERY**,
-   labelled `Rest`, for a rest;
+3. turns each set into an interval at the same point in the recording,
+   labelled e.g. `Bench Press (Barbell): 42kg×10` (or `Extra set (not in
+   Hevy)` for a set Hevy doesn't have), and each rest into one labelled `Rest`.
+   They are sent as WORK and RECOVERY, but Intervals.icu classifies intervals
+   itself and shows strength sets and rests alike as WORK, so go by the label;
 4. replaces the activity's intervals with these, so Intervals.icu works out the
    heart rate, time and load of each one.
 
